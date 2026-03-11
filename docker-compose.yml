@@ -39,7 +39,37 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
 
+  backend:
+    image: anuarbakhitkhanov1357/revorus-backend:latest
+    container_name: revorus-backend
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://root:rootpassword@postgres:5432/revorus_escrow
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_URL: amqp://root:rootpassword@rabbitmq:5672
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+
+  frontend:
+    image: anuarbakhitkhanov1357/revorus-frontend:latest
+    container_name: revorus-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+
