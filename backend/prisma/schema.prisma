@@ -1,0 +1,96 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  role        String   @default("BUYER") // ADMIN, BUYER, SELLER, MODERATOR
+  kycCleared  Boolean  @default(false)
+  
+  // Relations
+  boughtDeals EscrowDeal[] @relation("BuyerDeals")
+  soldDeals   EscrowDeal[] @relation("SellerDeals")
+}
+
+model EscrowDeal {
+  id               String   @id @default(uuid()) @db.Uuid
+  orderId          String   @db.Uuid
+  buyerId          String   @db.Uuid
+  sellerId         String   @db.Uuid
+  
+  status           String   @default("draft") // MUST MATCH STATE MACHINE
+  amount           Decimal  @db.Decimal(12, 2)
+  applicationFee   Decimal  @db.Decimal(12, 2)
+  totalEscrowed    Decimal  @db.Decimal(12, 2)
+  currency         String   @db.VarChar(3) @default("USD")
+  
+  expiresAt        DateTime?
+  version          Int      @default(1) // Optimistic concurrency version
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  buyer            User     @relation("BuyerDeals", fields: [buyerId], references: [id])
+  seller           User     @relation("SellerDeals", fields: [sellerId], references: [id])
+  statusHistory    EscrowStatusHistory[]
+  paymentTransactions PaymentTransaction[]
+  termsSnapshot    TermsSnapshot?
+  dispute          DisputeCase?
+}
+
+model EscrowStatusHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  escrowId       String   @db.Uuid
+  previousStatus String?
+  newStatus      String
+  triggerEvent   String
+  actorId        String?  @db.Uuid
+  metadata       Json?
+  changedAt      DateTime @default(now())
+
+  escrow         EscrowDeal @relation(fields: [escrowId], references: [id])
+}
+
+model PaymentTransaction {
+  id              String   @id @default(uuid()) @db.Uuid
+  escrowId        String   @db.Uuid
+  intentType      String   // CHARGE, REFUND, PAYOUT_SELLER
+  status          String   // PENDING, SUCCESS, FAILED
+  amount          Decimal  @db.Decimal(12, 2)
+  providerTxId    String?  // Id from Stripe/Bank
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+
+  escrow          EscrowDeal @relation(fields: [escrowId], references: [id])
+}
+
+model TermsSnapshot {
+  id                    String   @id @default(uuid()) @db.Uuid
+  escrowId              String   @unique @db.Uuid
+  listingStateAtPurchase Json
+  agreementFlags        Json
+  lockedAt              DateTime @default(now())
+
+  escrow                EscrowDeal @relation(fields: [escrowId], references: [id])
+}
+
+model DisputeCase {
+  id               String   @id @default(uuid()) @db.Uuid
+  escrowId         String   @unique @db.Uuid
+  openedById       String   @db.Uuid
+  reason           String
+  status           String   @default("under_review") // under_review, resolved_buyer, resolved_seller
+  resolutionNotes  String?
+  createdAt        DateTime @default(now())
+  resolvedAt       DateTime?
+
+  escrow           EscrowDeal @relation(fields: [escrowId], references: [id])
+}

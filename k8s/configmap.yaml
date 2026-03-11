@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: revorus-escrow-config
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  REDIS_HOST: "revorus-redis-svc"
+  REDIS_PORT: "6379"
+  RABBITMQ_URL: "amqp://root:rootpassword@revorus-rabbitmq-svc:5672"
+  # DATABASE_URL goes into Secrets

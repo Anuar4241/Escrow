@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: revorus-escrow-frontend
+  labels:
+    app: revorus-escrow-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: revorus-escrow-frontend
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: revorus-escrow-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: revorus/escrow-frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NEXT_PUBLIC_API_URL
+          value: "http://revorus-escrow-backend-svc:80"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: revorus-escrow-frontend-svc
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3000
+  selector:
+    app: revorus-escrow-frontend
