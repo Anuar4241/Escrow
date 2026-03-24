@@ -1,15 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useParams } from "next/navigation";
-import { CheckCircle2, Circle, Truck, PackageCheck, AlertCircle, ShieldCheck } from "lucide-react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { CheckCircle2, Circle, Truck, PackageCheck, AlertCircle, ShieldCheck, Bot } from "lucide-react";
 
 type EscrowStatus = 'AWAITING_PAYMENT' | 'FUNDED' | 'SHIPPED' | 'AWAITING_BUYER_CONFIRMATION' | 'COMPLETED' | 'DISPUTED';
 
 export default function EscrowTrackerClient() {
   const params = useParams();
-  const id = params.id as string;
-  
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const id = (params?.id as string) ?? searchParams.get("id") ?? "demo";
+
   const [status, setStatus] = useState<EscrowStatus>('AWAITING_PAYMENT');
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -85,6 +87,21 @@ export default function EscrowTrackerClient() {
             </div>
           </div>
         )}
+
+        {/* AI Agents CTA */}
+        <button
+          onClick={() => router.push(`/agents?id=${id}`)}
+          className="w-full mb-6 flex items-center gap-4 bg-gradient-to-r from-violet-600/20 to-indigo-600/20 border border-violet-500/30 rounded-2xl p-5 hover:from-violet-600/30 hover:to-indigo-600/30 transition-all group"
+        >
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+            <Bot className="w-6 h-6 text-white" />
+          </div>
+          <div className="text-left">
+            <p className="font-bold text-violet-200">AI Agents</p>
+            <p className="text-sm text-neutral-400">Support chat · Risk analysis · Dispute resolution</p>
+          </div>
+          <span className="ml-auto text-violet-400 text-lg">›</span>
+        </button>
 
         <div className="bg-neutral-800/50 border border-dashed border-neutral-700 rounded-2xl p-6">
           <h3 className="text-neutral-400 font-semibold mb-4 uppercase text-sm tracking-wider">Demo / Sandbox Controls</h3>
