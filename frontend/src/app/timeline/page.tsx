@@ -75,7 +75,7 @@ export default function Timeline() {
               <div className="text-center py-8">
                 <CheckCircle2 className="w-16 h-16 text-emerald-500 mx-auto mb-4" />
                 <h4 className="font-medium text-lg text-emerald-400">Transaction Complete</h4>
-                <p className="text-neutral-500 text-sm mt-2">Funds have been routed to the Seller's bank account.</p>
+                <p className="text-neutral-500 text-sm mt-2">Funds have been routed to the Seller&apos;s bank account.</p>
               </div>
             )}
           </div>

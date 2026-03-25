@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Android project - contains compiled/synced web assets
+    "android/**",
   ]),
 ]);
 
