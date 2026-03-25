@@ -1,17 +1,11 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
-const isProd = process.env.NODE_ENV === 'production';
-
 const config: CapacitorConfig = {
   appId: 'com.revorus.escrow',
   appName: 'Revorus Escrow',
-  webDir: 'out', // Fallback dir (required field)
-  server: {
-    // Dev: forwards to local Next.js server. Prod: set to your deployed URL.
-    url: isProd ? 'https://revorus-escrow.vercel.app' : 'http://10.0.2.2:3000',
-    cleartext: !isProd,
-    androidScheme: 'https',
-  },
+  webDir: 'out',
+  // Static assets are bundled in the APK — no remote server needed.
+  // API calls from the JS code will target NEXT_PUBLIC_BACKEND_URL at build time.
 };
 
 export default config;
