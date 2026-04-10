@@ -1,4 +1,4 @@
-import { IsUUID, IsNumber, IsString, Min, IsNotEmpty } from 'class-validator';
+import { IsUUID, IsInt, IsNumber, IsString, Min, IsNotEmpty } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateEscrowDto {
@@ -27,7 +27,7 @@ export class CreateEscrowDto {
 
 export class TransitionEscrowDto {
   @ApiProperty({ description: 'Optimistic concurrency version integer to prevent race conditions' })
-  @IsNumber()
+  @IsInt()
   @Min(1)
   expectedVersion: number;
 }

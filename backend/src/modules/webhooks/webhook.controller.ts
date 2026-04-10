@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Headers, HttpCode, HttpStatus, UnauthorizedException, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Headers, HttpCode, HttpStatus, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { EscrowService } from '../escrow/escrow.service';
 
@@ -39,8 +39,12 @@ export class WebhookController {
       return { received: true };
 
     } catch (error) {
-      // Return 400 for structural invalidity so PSP handles it
-      // However if it's a CONFLICT/RACE condition, PSP will retry cleanly later
+      // A BadRequestException from the state machine means the event was already processed
+      // (e.g. escrow already FUNDED). Return 200 so Stripe stops retrying.
+      if (error instanceof BadRequestException) {
+        this.logger.warn(`Webhook skipped — already processed or invalid transition: ${error.message}`);
+        return { received: true };
+      }
       this.logger.error('Webhook processing failed', error);
       throw error;
     }

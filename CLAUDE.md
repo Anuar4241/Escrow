@@ -226,22 +226,24 @@ npx prisma studio                 # Visual DB browser
 
 Base URL: `http://localhost:3001`
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/escrows` | Create escrow deal |
-| `GET` | `/escrows/:id/timeline` | Get immutable audit log |
-| `POST` | `/escrows/:id/fund` | PSP webhook funds escrow (idempotent) |
-| `POST` | `/escrows/:id/confirm-shipment` | Seller confirms shipment |
-| `POST` | `/escrows/:id/confirm-delivery` | Buyer confirms delivery |
-| `POST` | `/escrows/:id/release` | Buyer releases funds |
-| `POST` | `/escrows/:id/open-dispute` | Open a dispute |
-| `POST` | `/webhooks/payment` | Payment provider webhook |
+| Method | Path | Transition | Description |
+|---|---|---|---|
+| `POST` | `/escrows` | — | Create escrow deal |
+| `GET` | `/escrows/:id` | — | Get current deal state |
+| `GET` | `/escrows/:id/timeline` | — | Get immutable audit log |
+| `POST` | `/escrows/:id/fund` | `AWAITING_PAYMENT → FUNDED` | PSP webhook funds escrow (idempotent) |
+| `POST` | `/escrows/:id/notify-seller` | `FUNDED → AWAITING_SELLER_ACTION` | Notify seller to prepare shipment |
+| `POST` | `/escrows/:id/confirm-shipment` | `AWAITING_SELLER_ACTION → SHIPPED` | Seller confirms shipment |
+| `POST` | `/escrows/:id/mark-delivered` | `SHIPPED → AWAITING_BUYER_CONFIRMATION` | Mark item as delivered |
+| `POST` | `/escrows/:id/release` | `AWAITING_BUYER_CONFIRMATION → COMPLETED` | Buyer confirms receipt and releases funds |
+| `POST` | `/escrows/:id/open-dispute` | `* → DISPUTE_OPENED` | Open a dispute |
+| `POST` | `/webhooks/payment/stripe` | — | Stripe webhook handler |
 
-Swagger UI available at `/api` when the backend is running.
+Swagger UI available at `/api/docs` when the backend is running.
 
 All mutating endpoints require:
 - `x-idempotency-key` header (UUID recommended)
-- `expectedVersion` in the request body
+- `expectedVersion` (integer) in the request body
 
 ---
 
@@ -316,6 +318,7 @@ Production server URL: `https://revorus-escrow.vercel.app`
 ## Code Conventions
 
 ### Backend
+- **CORS**: enabled in `main.ts` via `app.enableCors()`. Origin is read from `FRONTEND_URL` env var (default `http://localhost:3000`). Add `FRONTEND_URL` to docker-compose / k8s configmap if deploying to a different domain.
 - **NestJS module pattern**: each feature gets a module, controller, service, and `dto/` folder
 - **DTOs**: use `class-validator` decorators for all request bodies; never accept raw unvalidated input
 - **Service methods**: always go through `transitionStatus()` for state changes — do not write ad-hoc `prisma.escrowDeal.update()` calls that bypass the engine

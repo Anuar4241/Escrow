@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { EscrowEngine, EscrowStatus, EscrowTransitionException } from '../../domain/escrow/escrow.engine';
 import { RabbitMQService } from '../../infrastructure/messaging/rabbitmq.service';
@@ -37,6 +37,12 @@ export class EscrowService {
     });
   }
 
+  async getDeal(id: string) {
+    const deal = await this.prisma.escrowDeal.findUnique({ where: { id } });
+    if (!deal) throw new NotFoundException('Escrow deal not found');
+    return deal;
+  }
+
   async getTimeline(id: string) {
     return this.prisma.escrowStatusHistory.findMany({
       where: { escrowId: id },
@@ -46,13 +52,13 @@ export class EscrowService {
 
   // Idempotent Fund Webhook (triggered by PSP)
   async fundEscrow(id: string, expectedVersion: number, providerTxId: string) {
-    return this.transitionStatus(id, EscrowStatus.FUNDED, expectedVersion, 'PSP_FUNDED_WEBHOOK', async (tx) => {
+    return this.transitionStatus(id, EscrowStatus.FUNDED, expectedVersion, 'PSP_FUNDED_WEBHOOK', async (tx, deal) => {
       await tx.paymentTransaction.create({
         data: {
           escrowId: id,
           intentType: 'CHARGE',
           status: 'SUCCESS',
-          amount: 0, 
+          amount: deal.totalEscrowed, // Use actual escrowed amount for accurate payment records
           providerTxId: providerTxId,
           idempotencyKey: `charge_${providerTxId}`,
         }
@@ -60,16 +66,23 @@ export class EscrowService {
     });
   }
 
+  // Notify seller that payment is confirmed and shipment is required (FUNDED → AWAITING_SELLER_ACTION)
+  async notifySeller(id: string, expectedVersion: number) {
+    return this.transitionStatus(id, EscrowStatus.AWAITING_SELLER_ACTION, expectedVersion, 'SELLER_NOTIFIED');
+  }
+
   async confirmShipment(id: string, expectedVersion: number) {
     return this.transitionStatus(id, EscrowStatus.SHIPPED, expectedVersion, 'SELLER_MARKED_SHIPPED');
   }
 
-  async confirmDelivery(id: string, expectedVersion: number) {
-    return this.transitionStatus(id, EscrowStatus.AWAITING_BUYER_CONFIRMATION, expectedVersion, 'BUYER_CONFIRMED_DELIVERY');
+  // Marks item as physically delivered; transitions to AWAITING_BUYER_CONFIRMATION
+  async markDelivered(id: string, expectedVersion: number) {
+    return this.transitionStatus(id, EscrowStatus.AWAITING_BUYER_CONFIRMATION, expectedVersion, 'DELIVERY_NOTIFICATION');
   }
 
+  // Buyer explicitly confirms receipt and releases funds (AWAITING_BUYER_CONFIRMATION → COMPLETED)
   async releaseFunds(id: string, expectedVersion: number) {
-    return this.transitionStatus(id, EscrowStatus.COMPLETED, expectedVersion, 'BUYER_RELEASE_FUNDS');
+    return this.transitionStatus(id, EscrowStatus.COMPLETED, expectedVersion, 'BUYER_CONFIRMED_RECEIPT');
   }
 
   async openDispute(id: string, expectedVersion: number, reason: string, openedById: string) {
@@ -85,57 +98,52 @@ export class EscrowService {
   }
 
   /**
-   * The core generic atomic transition wrapper
-   * Guarantees all valid states and locks execution.
+   * The core generic atomic transition wrapper.
+   * Guarantees all valid state transitions and prevents concurrent mutations.
+   * sideEffect receives the transaction client AND the current deal snapshot.
    */
   private async transitionStatus(
-    escrowId: string, 
-    targetStatus: EscrowStatus, 
-    expectedVersion: number, 
+    escrowId: string,
+    targetStatus: EscrowStatus,
+    expectedVersion: number,
     triggerEvent: string,
-    sideEffect?: (tx: any) => Promise<void>
+    sideEffect?: (tx: any, deal: any) => Promise<void>,
   ) {
-    // 1. Transactional Database update
     const result = await this.prisma.$transaction(async (tx) => {
       const deal = await tx.escrowDeal.findUnique({ where: { id: escrowId } });
       if (!deal) throw new BadRequestException('Escrow deal not found');
 
-      // Guard Concurrency
       EscrowEngine.checkOptimisticLock(deal as any, expectedVersion);
 
-      // Guard Domain Rules
       try {
         EscrowEngine.validateTransition(deal.status, targetStatus);
       } catch(e) {
         throw new BadRequestException(e.message);
       }
 
-      // Optional Side Effects
-      if (sideEffect) await sideEffect(tx);
+      if (sideEffect) await sideEffect(tx, deal);
 
-      // Update deal version and status atomically
       const updatedDeal = await tx.escrowDeal.update({
         where: { id: deal.id },
         data: {
           status: targetStatus,
-          version: { increment: 1 }
-        }
+          version: { increment: 1 },
+        },
       });
 
-      // Append immutable Audit log
       await tx.escrowStatusHistory.create({
         data: {
           escrowId: deal.id,
           previousStatus: deal.status,
           newStatus: targetStatus,
           triggerEvent: triggerEvent,
-        }
+        },
       });
 
       return updatedDeal;
     });
 
-    // 2. Publish Domain Event outbox AFTER successful DB commit
+    // Publish domain event AFTER successful DB commit
     await this.rabbitMQ.publishEvent(`escrow.${targetStatus.toLowerCase()}`, {
       escrowId: result.id,
       newStatus: result.status,

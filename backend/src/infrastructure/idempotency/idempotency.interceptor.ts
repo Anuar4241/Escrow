@@ -1,10 +1,13 @@
 import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpException, HttpStatus } from '@nestjs/common';
-import { Observable, of } from 'rxjs';
-import { tap } from 'rxjs/operators';
+import { Observable, of, throwError } from 'rxjs';
+import { tap, catchError } from 'rxjs/operators';
 import Redis from 'ioredis';
 
-// Simulated Redis idempotency store, usually injected globally
-const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+// Use REDIS_HOST/REDIS_PORT to match docker-compose and k8s environment variables
+const redisClient = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+});
 
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -13,7 +16,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const idempotencyKey = request.headers['x-idempotency-key'];
 
     if (!idempotencyKey) {
-      // For safely strictly mutating APIs
       if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
          throw new HttpException('x-idempotency-key header is required', HttpStatus.BAD_REQUEST);
       }
@@ -22,7 +24,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const cachedResponse = await redisClient.get(`idempo:res:${idempotencyKey}`);
     if (cachedResponse) {
-      // Safely return identical response if key was already processed
       return of(JSON.parse(cachedResponse));
     }
 
@@ -36,7 +37,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
         // Save terminal response to cache for 24 hours
         await redisClient.set(`idempo:res:${idempotencyKey}`, JSON.stringify(response), 'EX', 86400);
         await redisClient.del(`idempo:lock:${idempotencyKey}`);
-      })
+      }),
+      catchError((error) => {
+        // Always release the lock on failure so the client can retry immediately
+        redisClient.del(`idempo:lock:${idempotencyKey}`).catch(() => {});
+        return throwError(() => error);
+      }),
     );
   }
 }
