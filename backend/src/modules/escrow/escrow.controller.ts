@@ -1,70 +1,114 @@
-import { Controller, Post, Get, Param, Body, UseInterceptors, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiResponse } from '@nestjs/swagger';
-import { EscrowService } from './escrow.service';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
+import type { AuthUser } from '../../auth/auth-user';
+import { CurrentUser } from '../../auth/current-user.decorator';
+import { Roles } from '../../auth/roles.decorator';
 import { IdempotencyInterceptor } from '../../infrastructure/idempotency/idempotency.interceptor';
-import { CreateEscrowDto, TransitionEscrowDto, FundEscrowDto, OpenDisputeDto } from './dto/escrow.dto';
-
+import {
+  ConfirmShipmentDto,
+  CreateEscrowDto,
+  OpenDisputeDto,
+  ResolveDisputeDto,
+  TransitionEscrowDto,
+} from './dto/escrow.dto';
+import { EscrowService } from './escrow.service';
 @ApiTags('Escrows')
+@ApiBearerAuth()
+@ApiHeader({
+  name: 'x-idempotency-key',
+  required: false,
+  description: 'Required for mutating requests',
+})
+@UseInterceptors(IdempotencyInterceptor)
 @Controller('escrows')
 export class EscrowController {
-  constructor(private readonly escrowService: EscrowService) {}
-
-  @Post()
-  @ApiOperation({ summary: 'Create a new escrow deal (draft/awaiting payment)' })
-  @ApiResponse({ status: 201, description: 'Escrow deal initiated' })
-  async createEscrow(@Body() body: CreateEscrowDto) {
-    return this.escrowService.createEscrow(body);
+  constructor(private readonly service: EscrowService) {}
+  @Get() list(@CurrentUser() actor: AuthUser) {
+    return this.service.listDeals(actor);
   }
-
-  @Get(':id/timeline')
-  @ApiOperation({ summary: 'Get full immutable audit timeline for a specific escrow' })
-  async getTimeline(@Param('id') id: string) {
-    return this.escrowService.getTimeline(id);
+  @Post() @Roles('BUYER', 'ADMIN') create(
+    @Body() body: CreateEscrowDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.createEscrow(body, actor);
   }
-
-  @Post(':id/fund')
-  @HttpCode(HttpStatus.OK)
-  @UseInterceptors(IdempotencyInterceptor)
-  @ApiOperation({ summary: 'Internal PSP webhook to fund an escrow' })
-  @ApiHeader({ name: 'x-idempotency-key', required: true, description: 'Unique hash to prevent double funding' })
-  async fundEscrow(@Param('id') id: string, @Body() body: FundEscrowDto) {
-    return this.escrowService.fundEscrow(id, body.expectedVersion, body.providerTxId);
+  @Get(':id') get(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.getDeal(id, actor);
   }
-
+  @Get(':id/timeline') timeline(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.getTimeline(id, actor);
+  }
   @Post(':id/confirm-shipment')
+  @Roles('SELLER', 'ADMIN')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(IdempotencyInterceptor)
-  @ApiOperation({ summary: 'Seller confirms shipment or handover' })
-  @ApiHeader({ name: 'x-idempotency-key', required: true })
-  async confirmShipment(@Param('id') id: string, @Body() body: TransitionEscrowDto) {
-    return this.escrowService.confirmShipment(id, body.expectedVersion);
+  confirmShipment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ConfirmShipmentDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.confirmShipment(id, body, actor);
   }
-
-  @Post(':id/confirm-delivery')
+  @Post(':id/mark-delivered')
+  @Roles('BUYER', 'ADMIN')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(IdempotencyInterceptor)
-  @ApiOperation({ summary: 'Buyer confirms receipt of goods' })
-  @ApiHeader({ name: 'x-idempotency-key', required: true })
-  async confirmDelivery(@Param('id') id: string, @Body() body: TransitionEscrowDto) {
-    return this.escrowService.confirmDelivery(id, body.expectedVersion);
+  markDelivered(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: TransitionEscrowDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.markDelivered(id, body.expectedVersion, actor);
   }
-
   @Post(':id/release')
+  @Roles('BUYER', 'ADMIN')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(IdempotencyInterceptor)
-  @ApiOperation({ summary: 'Release funds from completed escrow towards seller payout' })
-  @ApiHeader({ name: 'x-idempotency-key', required: true })
-  async releaseFunds(@Param('id') id: string, @Body() body: TransitionEscrowDto) {
-    return this.escrowService.releaseFunds(id, body.expectedVersion);
+  release(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: TransitionEscrowDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.releaseFunds(id, body.expectedVersion, actor);
   }
-
+  @Post(':id/cancel') @Roles('BUYER', 'ADMIN') @HttpCode(HttpStatus.OK) cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: TransitionEscrowDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.cancel(id, body.expectedVersion, actor);
+  }
   @Post(':id/open-dispute')
+  @Roles('BUYER', 'SELLER', 'ADMIN')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(IdempotencyInterceptor)
-  @ApiOperation({ summary: 'Open a dispute against an active escrow' })
-  @ApiHeader({ name: 'x-idempotency-key', required: true })
-  async openDispute(@Param('id') id: string, @Body() body: OpenDisputeDto) {
-    return this.escrowService.openDispute(id, body.expectedVersion, body.reason, body.openedById);
+  openDispute(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: OpenDisputeDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.openDispute(id, body, actor);
+  }
+  @Post(':id/resolve-dispute')
+  @Roles('MODERATOR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  resolve(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ResolveDisputeDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.service.resolveDispute(id, body, actor);
   }
 }
-

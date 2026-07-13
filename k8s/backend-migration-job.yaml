@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata: { name: revorus-escrow-migrate-replace-with-commit-sha }
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: migrate
+          image: ghcr.io/anuar4241/revorus-backend-migrate:replace-with-commit-sha
+          envFrom: [{ configMapRef: { name: revorus-escrow-config } }, { secretRef: { name: revorus-escrow-secrets } }]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }

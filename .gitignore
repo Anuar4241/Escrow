@@ -1,5 +1,11 @@
-node_modules
-dist
-.env
-.next
+node_modules/
+dist/
+.next/
+out/
+coverage/
 .DS_Store
+.env
+.env.*
+!.env.example
+*.local
+k8s/secrets.yaml

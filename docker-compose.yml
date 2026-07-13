@@ -1,75 +1,44 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:15-alpine
-    container_name: revorus-postgres
-    environment:
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: rootpassword
-      POSTGRES_DB: revorus_escrow
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U root -d revorus_escrow"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
+    image: postgres:17-alpine
+    environment: { POSTGRES_USER: "${POSTGRES_USER:-revorus}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}", POSTGRES_DB: "${POSTGRES_DB:-revorus_escrow}" }
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 5s, timeout: 5s, retries: 10 }
   redis:
-    image: redis:7-alpine
-    container_name: revorus-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-
+    image: redis:7.4-alpine
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment: { REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}" }
+    volumes: ["redis_data:/data"]
+    healthcheck: { test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"], interval: 5s, timeout: 3s, retries: 10 }
   rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: revorus-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: root
-      RABBITMQ_DEFAULT_PASS: rootpassword
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-
-  backend:
-    image: anuarbakhitkhanov1357/revorus-backend:latest
-    container_name: revorus-backend
-    ports:
-      - "3001:3000"
-    environment:
-      DATABASE_URL: postgresql://root:rootpassword@postgres:5432/revorus_escrow
+    image: rabbitmq:4-management-alpine
+    environment: { RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER:-revorus}", RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}" }
+    volumes: ["rabbitmq_data:/var/lib/rabbitmq"]
+    healthcheck: { test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], interval: 10s, timeout: 5s, retries: 10 }
+  migrate:
+    build: { context: ./backend, target: migration }
+    environment: &backend_environment
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-revorus}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-revorus_escrow}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-revorus-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-revorus-escrow}
+      BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET:?Set BANK_WEBHOOK_SECRET in .env}
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      RABBITMQ_URL: amqp://root:rootpassword@rabbitmq:5672
-      NODE_ENV: production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      rabbitmq:
-        condition: service_started
-
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-revorus}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      FRONTEND_URLS: ${FRONTEND_URLS:-http://localhost:3000}
+    depends_on: { postgres: { condition: service_healthy } }
+  backend:
+    build: ./backend
+    environment: *backend_environment
+    ports: ["3001:3000"]
+    depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_healthy }, rabbitmq: { condition: service_healthy } }
   frontend:
-    image: anuarbakhitkhanov1357/revorus-frontend:latest
-    container_name: revorus-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:3001
-    depends_on:
-      - backend
-
-volumes:
-  postgres_data:
-  redis_data:
-  rabbitmq_data:
-
+    build: ./frontend
+    environment: { NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:3001}" }
+    ports: ["3000:3000"]
+    depends_on: { backend: { condition: service_healthy } }
+volumes: { postgres_data: {}, redis_data: {}, rabbitmq_data: {} }

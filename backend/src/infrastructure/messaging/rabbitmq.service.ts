@@ -1,47 +1,81 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as amqp from 'amqp-connection-manager';
 import { ChannelWrapper } from 'amqp-connection-manager';
 import { ConfirmChannel } from 'amqplib';
-
 @Injectable()
 export class RabbitMQService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RabbitMQService.name);
-  private connection: amqp.AmqpConnectionManager;
-  private channelWrapper: ChannelWrapper;
-
-  async onModuleInit() {
-    this.connection = amqp.connect([process.env.RABBITMQ_URL || 'amqp://root:rootpassword@localhost:5672']);
-    
-    this.channelWrapper = this.connection.createChannel({
+  private connection?: amqp.AmqpConnectionManager;
+  private channel?: ChannelWrapper;
+  private connected = false;
+  constructor(private readonly config: ConfigService) {}
+  onModuleInit(): void {
+    const url = this.config.get<string>('RABBITMQ_URL');
+    if (!url) {
+      this.logger.warn(
+        'RabbitMQ disabled because RABBITMQ_URL is not configured',
+      );
+      return;
+    }
+    this.connection = amqp.connect([url]);
+    this.channel = this.connection.createChannel({
       json: true,
-      setup: function(channel: ConfirmChannel) {
-        // Assert the central domain exchange
-        return Promise.all([
-          channel.assertExchange('revorus.escrow.events', 'topic', { durable: true }),
-        ]);
-      },
+      setup: (channel: ConfirmChannel) =>
+        channel.assertExchange('revorus.escrow.events', 'topic', {
+          durable: true,
+        }),
     });
-
-    this.connection.on('connect', () => this.logger.log('Connected to RabbitMQ!'));
-    this.connection.on('disconnect', err => this.logger.error('RabbitMQ Disconnected.', err));
+    this.connection.on('connect', () => {
+      this.connected = true;
+      this.logger.log('Connected to RabbitMQ');
+    });
+    this.connection.on('disconnect', () => {
+      this.connected = false;
+      this.logger.error('RabbitMQ disconnected');
+    });
   }
-
-  async onModuleDestroy() {
-    await this.channelWrapper?.close();
+  async onModuleDestroy(): Promise<void> {
+    await this.channel?.close();
     await this.connection?.close();
   }
-
-  /**
-   * Publish a high-value domain event.
-   * e.g., deal.funded, deal.shipped, deal.disputed
-   */
-  async publishEvent(routingKey: string, payload: any) {
+  isHealthy(): boolean {
+    return this.connected;
+  }
+  async publishEvent(
+    routingKey: string,
+    payload: unknown,
+    messageId: string,
+  ): Promise<void> {
+    if (!this.channel)
+      throw new ServiceUnavailableException('RabbitMQ publisher is disabled');
+    const timeoutMs = this.config.getOrThrow<number>(
+      'RABBITMQ_PUBLISH_TIMEOUT_MS',
+    );
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await this.channelWrapper.publish('revorus.escrow.events', routingKey, payload);
-      this.logger.debug(`Published event ${routingKey}`);
-    } catch (error) {
-      this.logger.error(`Failed to publish event ${routingKey}`, error);
-      throw error;
+      await Promise.race([
+        this.channel.publish('revorus.escrow.events', routingKey, payload, {
+          contentType: 'application/json',
+          messageId,
+          persistent: true,
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('RabbitMQ publish confirmation timed out')),
+            timeoutMs,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

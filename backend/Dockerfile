@@ -1,50 +1,30 @@
-# Step 1: Base & Build
-FROM node:20-alpine AS builder
-
+FROM node:22-alpine AS dependencies
 WORKDIR /app
-COPY package*.json ./
-COPY prisma ./prisma/
-
-# Install all deps (including dev) for building
+COPY package.json package-lock.json ./
 RUN npm ci
-
-# Generate Prisma Client
-RUN npx prisma generate
-
-COPY . .
-
-# Build NestJS
-RUN npm run build
-
-# Step 2: Production Dependencies
-FROM node:20-alpine AS deps
-
+FROM dependencies AS build
+COPY prisma ./prisma
+COPY prisma.config.ts nest-cli.json tsconfig.json tsconfig.build.json ./
+COPY src ./src
+RUN npm run prisma:generate && npm run build
+FROM dependencies AS migration
+COPY --chown=node:node prisma ./prisma
+COPY --chown=node:node prisma.config.ts ./
+USER node
+CMD ["npm", "run", "prisma:migrate"]
+FROM node:22-alpine AS production-dependencies
 WORKDIR /app
-COPY package*.json ./
-COPY prisma ./prisma/
-
-# Install ONLY production dependencies to keep image small
-RUN npm ci --omit=dev
-RUN npx prisma generate
-
-# Step 3: Production Image
-FROM node:20-alpine AS production
-
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+FROM node:22-alpine AS production
 WORKDIR /app
-
-# Set production environment
 ENV NODE_ENV=production
-
-# Copy built code and prod-only modules
-COPY --from=builder /app/dist ./dist
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/package.json ./package.json
-COPY --from=deps /app/prisma ./prisma
-
-# Add a non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
-
+COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --from=production-dependencies --chown=node:node /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=node:node /app/node_modules/@prisma/client ./node_modules/@prisma/client
+COPY --from=build --chown=node:node /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=build --chown=node:node /app/dist ./dist
+USER node
 EXPOSE 3000
-
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 CMD ["node", "dist/main"]
