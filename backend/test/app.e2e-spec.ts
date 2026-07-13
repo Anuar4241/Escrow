@@ -1,25 +1,33 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-
-describe('AppController (e2e)', () => {
+import type { App } from 'supertest/types';
+import { AppModule } from '../src/app.module';
+import { RabbitMQService } from '../src/infrastructure/messaging/rabbitmq.service';
+import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { RedisService } from '../src/infrastructure/redis/redis.service';
+describe('application boundaries (e2e)', () => {
   let app: INestApplication<App>;
-
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
+  beforeAll(async () => {
+    const moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
-
+    })
+      .overrideProvider(PrismaService)
+      .useValue({ $queryRaw: jest.fn().mockResolvedValue([1]) })
+      .overrideProvider(RedisService)
+      .useValue({ ping: jest.fn().mockResolvedValue(true) })
+      .overrideProvider(RabbitMQService)
+      .useValue({ isHealthy: jest.fn().mockReturnValue(true) })
+      .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
   });
-
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
+  afterAll(async () => app.close());
+  it('exposes liveness', () =>
+    request(app.getHttpServer())
+      .get('/health/live')
       .expect(200)
-      .expect('Hello World!');
-  });
+      .expect({ status: 'ok' }));
+  it('protects escrow routes', () =>
+    request(app.getHttpServer()).get('/escrows').expect(401));
 });

@@ -10,7 +10,7 @@ export default function Home() {
             Revorus Marketplace
           </h1>
           <p className="text-neutral-400 text-lg">
-            The next generation of high-trust trading.
+            Демо безопасной сделки между покупателем и продавцом.
           </p>
         </header>
 
@@ -21,13 +21,13 @@ export default function Home() {
             <div className="w-2/3 pl-8 flex flex-col">
               <div className="flex justify-between items-start mb-2">
                 <h2 className="text-2xl font-bold">MacBook Pro M3 Max</h2>
-                <span className="text-2xl font-semibold">$3,499.00</span>
+                <span className="text-2xl font-semibold">1 749 500 ₸</span>
               </div>
-              <p className="text-neutral-400 mb-6">Condition: Like New. Original box included.</p>
+              <p className="text-neutral-400 mb-6">Состояние: как новый. Оригинальная коробка в комплекте.</p>
               
               <div className="flex items-center gap-2 text-sm text-emerald-400 bg-emerald-400/10 px-3 py-1.5 rounded-full w-fit mb-8">
                 <ShieldCheck className="w-4 h-4" />
-                <span>Revorus Escrow Eligible</span>
+                <span>Доступна защита Revorus Escrow</span>
               </div>
 
               <div className="mt-auto self-end">
@@ -35,7 +35,7 @@ export default function Home() {
                   href="/checkout"
                   className="bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold px-6 py-3 rounded-xl flex items-center gap-2 transition-colors"
                 >
-                  Buy Safely
+                  Открыть демо-сделку
                   <ChevronRight className="w-4 h-4" />
                 </Link>
               </div>

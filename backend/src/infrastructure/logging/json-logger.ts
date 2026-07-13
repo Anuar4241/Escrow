@@ -1,42 +1,20 @@
-import { LoggerService, Injectable } from '@nestjs/common';
-
+import { ConsoleLogger, Injectable, LogLevel } from '@nestjs/common';
 @Injectable()
-export class JsonLogger implements LoggerService {
-  log(message: any, context?: string) {
-    this.printLog('info', message, context);
-  }
-
-  error(message: any, trace?: string, context?: string) {
-    this.printLog('error', message, context, trace);
-  }
-
-  warn(message: any, context?: string) {
-    this.printLog('warn', message, context);
-  }
-
-  debug?(message: any, context?: string) {
-    if (process.env.NODE_ENV !== 'production') {
-      this.printLog('debug', message, context);
+export class JsonLogger extends ConsoleLogger {
+  protected printMessages(
+    messages: unknown[],
+    context?: string,
+    logLevel: LogLevel = 'log',
+    writeStreamType?: 'stdout' | 'stderr',
+  ): void {
+    const stream =
+      writeStreamType === 'stderr' ? process.stderr : process.stdout;
+    for (const message of messages) {
+      const normalized =
+        typeof message === 'string' ? message : JSON.stringify(message);
+      stream.write(
+        `${JSON.stringify({ timestamp: new Date().toISOString(), level: logLevel, context, message: normalized })}\n`,
+      );
     }
-  }
-
-  verbose?(message: any, context?: string) {
-    if (process.env.NODE_ENV !== 'production') {
-      this.printLog('verbose', message, context);
-    }
-  }
-
-  private printLog(level: string, message: any, context?: string, trace?: string) {
-    const logObj = {
-      timestamp: new Date().toISOString(),
-      level,
-      context,
-      message,
-      trace,
-    };
-    
-    // In production, everything outputs to process.stdout as a single JSON line
-    // Datadog/ElasticSearch fluentd parsers will pick this up instantly.
-    console.log(JSON.stringify(logObj));
   }
 }

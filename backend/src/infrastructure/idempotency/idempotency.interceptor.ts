@@ -1,42 +1,146 @@
-import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpException, HttpStatus } from '@nestjs/common';
-import { Observable, of } from 'rxjs';
-import { tap } from 'rxjs/operators';
-import Redis from 'ioredis';
-
-// Simulated Redis idempotency store, usually injected globally
-const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-
+import {
+  BadRequestException,
+  CallHandler,
+  ConflictException,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  NestInterceptor,
+} from '@nestjs/common';
+import { createHash, randomUUID } from 'crypto';
+import { Request } from 'express';
+import {
+  Observable,
+  catchError,
+  from,
+  map,
+  mergeMap,
+  of,
+  throwError,
+} from 'rxjs';
+import { AuthUser } from '../../auth/auth-user';
+import { RedisService } from '../redis/redis.service';
+interface AuthenticatedRequest extends Request {
+  user?: AuthUser;
+  rawBody?: Buffer;
+}
+interface CachedEnvelope {
+  fingerprint: string;
+  response: unknown;
+}
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
-  async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<any>> {
-    const request = context.switchToHttp().getRequest();
-    const idempotencyKey = request.headers['x-idempotency-key'];
-
-    if (!idempotencyKey) {
-      // For safely strictly mutating APIs
-      if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
-         throw new HttpException('x-idempotency-key header is required', HttpStatus.BAD_REQUEST);
-      }
+  private readonly logger = new Logger(IdempotencyInterceptor.name);
+  constructor(private readonly redis: RedisService) {}
+  async intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Promise<Observable<unknown>> {
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method))
       return next.handle();
+    const providedKey = request.headers['x-idempotency-key'];
+    if (
+      typeof providedKey !== 'string' ||
+      !/^[A-Za-z0-9._:-]{8,160}$/.test(providedKey)
+    )
+      throw new BadRequestException(
+        'x-idempotency-key must contain 8-160 safe characters',
+      );
+    const scope = [
+      request.user?.id ?? 'anonymous',
+      request.method,
+      request.originalUrl.split('?')[0],
+      providedKey,
+    ].join(':');
+    const digest = createHash('sha256').update(scope).digest('hex');
+    const responseKey = `idempotency:response:${digest}`;
+    const lockKey = `idempotency:lock:${digest}`;
+    const fingerprint = createHash('sha256')
+      .update(
+        request.rawBody ?? Buffer.from(JSON.stringify(request.body ?? null)),
+      )
+      .digest('hex');
+    const lockToken = randomUUID();
+    const cached = await this.readCached(responseKey, fingerprint);
+    if (cached) return of(cached.response);
+    if (!(await this.redis.acquire(lockKey, lockToken, 300)))
+      throw new ConflictException(
+        'A request with this idempotency key is already in progress',
+      );
+    const cachedAfterLock = await this.readCached(responseKey, fingerprint);
+    if (cachedAfterLock) {
+      await this.redis.release(lockKey, lockToken);
+      return of(cachedAfterLock.response);
     }
-
-    const cachedResponse = await redisClient.get(`idempo:res:${idempotencyKey}`);
-    if (cachedResponse) {
-      // Safely return identical response if key was already processed
-      return of(JSON.parse(cachedResponse));
-    }
-
-    const locked = await redisClient.set(`idempo:lock:${idempotencyKey}`, 'LOCKED', 'EX', 10, 'NX');
-    if (!locked) {
-      throw new HttpException('Request already in-flight for this Idempotency Key', HttpStatus.CONFLICT);
-    }
-
     return next.handle().pipe(
-      tap(async (response) => {
-        // Save terminal response to cache for 24 hours
-        await redisClient.set(`idempo:res:${idempotencyKey}`, JSON.stringify(response), 'EX', 86400);
-        await redisClient.del(`idempo:lock:${idempotencyKey}`);
-      })
+      mergeMap((response: unknown) =>
+        from(
+          this.cacheAndUnlock(
+            responseKey,
+            lockKey,
+            lockToken,
+            fingerprint,
+            response,
+          ),
+        ).pipe(
+          map(() => response),
+          catchError((error: Error) => {
+            this.logger.error(
+              `Unable to cache idempotent response: ${error.message}`,
+            );
+            return of(response);
+          }),
+        ),
+      ),
+      catchError((error: unknown) =>
+        from(
+          this.redis.release(lockKey, lockToken).catch(() => undefined),
+        ).pipe(mergeMap(() => throwError(() => error))),
+      ),
     );
+  }
+  private async cacheAndUnlock(
+    responseKey: string,
+    lockKey: string,
+    lockToken: string,
+    fingerprint: string,
+    response: unknown,
+  ): Promise<void> {
+    await this.redis.set(
+      responseKey,
+      JSON.stringify({ fingerprint, response: response ?? null }),
+      86_400,
+    );
+    await this.redis.release(lockKey, lockToken);
+  }
+  private async readCached(
+    responseKey: string,
+    fingerprint: string,
+  ): Promise<CachedEnvelope | null> {
+    const cached = await this.redis.get(responseKey);
+    if (!cached) return null;
+    try {
+      const envelope = JSON.parse(cached) as Partial<CachedEnvelope>;
+      if (
+        !envelope ||
+        typeof envelope !== 'object' ||
+        typeof envelope.fingerprint !== 'string' ||
+        !Object.prototype.hasOwnProperty.call(envelope, 'response')
+      )
+        throw new Error('Invalid cache');
+      if (envelope.fingerprint !== fingerprint)
+        throw new ConflictException(
+          'This idempotency key was already used with another request body',
+        );
+      return envelope as CachedEnvelope;
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      this.logger.warn(
+        `Discarding corrupt idempotency response ${responseKey}`,
+      );
+      await this.redis.delete(responseKey);
+      return null;
+    }
   }
 }

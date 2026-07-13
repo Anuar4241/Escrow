@@ -1,11 +1,16 @@
 apiVersion: v1
 kind: ConfigMap
-metadata:
-  name: revorus-escrow-config
+metadata: { name: revorus-escrow-config }
 data:
-  NODE_ENV: "production"
+  NODE_ENV: production
   PORT: "3000"
-  REDIS_HOST: "revorus-redis-svc"
+  JWT_ISSUER: revorus-identity
+  JWT_AUDIENCE: revorus-escrow
+  BANK_WEBHOOK_TOLERANCE_SECONDS: "300"
+  ESCROW_FEE_BPS: "150"
+  REDIS_HOST: revorus-redis-svc
   REDIS_PORT: "6379"
-  RABBITMQ_URL: "amqp://root:rootpassword@revorus-rabbitmq-svc:5672"
-  # DATABASE_URL goes into Secrets
+  OUTBOX_PUBLISHER_ENABLED: "true"
+  OUTBOX_POLL_INTERVAL_MS: "1000"
+  RABBITMQ_PUBLISH_TIMEOUT_MS: "5000"
+  FRONTEND_URLS: https://escrow.example.com

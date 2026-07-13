@@ -1,155 +1,89 @@
-name: Revorus Escrow CI/CD
-
+name: Revorus Escrow CI
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
+  pull_request: { branches: [main] }
+  push: { branches: [main] }
+concurrency: { group: "ci-${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
+permissions: { contents: read }
 jobs:
-  build_backend:
+  backend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./backend
-    
+    defaults: { run: { working-directory: backend } }
     services:
       postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: rootpassword
-          POSTGRES_DB: revorus_escrow_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: revorus, POSTGRES_PASSWORD: revorus-ci-password, POSTGRES_DB: revorus_escrow_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U revorus -d revorus_escrow_test" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://revorus:revorus-ci-password@localhost:5432/revorus_escrow_test?schema=public
+      JWT_SECRET: ci-jwt-secret-with-at-least-thirty-two-characters
+      JWT_ISSUER: revorus-identity
+      JWT_AUDIENCE: revorus-escrow
+      BANK_WEBHOOK_SECRET: ci-bank-secret-with-at-least-thirty-two-characters
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      FRONTEND_URLS: http://localhost:3000
+      OUTBOX_PUBLISHER_ENABLED: "false"
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: ./backend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci || npm install
-
-    - name: Run Prisma generate
-      run: npx prisma generate
-      env:
-        DATABASE_URL: postgresql://root:rootpassword@localhost:5432/revorus_escrow_test
-
-    - name: Run ESLint
-      run: npm run lint
-      continue-on-error: true # Allow lint errors to pass in CI for now to prioritize build
-
-    - name: Build
-      run: npm run build
-      env:
-        DATABASE_URL: postgresql://root:rootpassword@localhost:5432/revorus_escrow_test
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_LOGIN }}
-        password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build and push Backend Image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./backend
-        push: true
-        tags: ${{ secrets.DOCKERHUB_LOGIN }}/revorus-backend:latest
-
-  build_frontend:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: backend/package-lock.json }
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run prisma:validate
+      - run: npm run prisma:generate
+      - run: npm run prisma:migrate
+      - run: npm run lint
+      - run: npm test -- --runInBand
+      - run: npm run build
+      - run: npm run test:e2e
+  frontend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
+    defaults: { run: { working-directory: frontend } }
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: ./frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci || npm install
-
-    - name: Format Check / Lint
-      run: npm run lint
-      continue-on-error: true
-
-    - name: Build Next.js
-      run: npm run build
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_LOGIN }}
-        password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build and push Frontend Image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./frontend
-        push: true
-        tags: ${{ secrets.DOCKERHUB_LOGIN }}/revorus-frontend:latest
-
-  build_android:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run lint
+      - run: npm run build
+  android:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
+    needs: frontend
+    defaults: { run: { working-directory: frontend } }
     steps:
-    - uses: actions/checkout@v3
-
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: ./frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci || npm install
-
-    - name: Sync Capacitor Android project
-      run: npx cap sync android
-      env:
-        NODE_ENV: production
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x android/gradlew
-
-    - name: Build debug APK
-      run: ./gradlew assembleDebug --no-daemon
-      working-directory: ./frontend/android
-
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: revorus-escrow-debug
-        path: ./frontend/android/app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 14
-
-
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: gradle }
+      - run: npm ci
+      - run: npx cap sync android
+        env: { NODE_ENV: production, CAPACITOR_SERVER_URL: "${{ vars.CAPACITOR_SERVER_URL }}" }
+      - run: chmod +x android/gradlew
+      - run: ./gradlew assembleDebug --no-daemon
+        working-directory: frontend/android
+      - uses: actions/upload-artifact@v4
+        with: { name: "revorus-escrow-debug-${{ github.sha }}", path: frontend/android/app/build/outputs/apk/debug/app-debug.apk, retention-days: 14 }
+  publish-images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/build-push-action@v6
+        with: { context: backend, push: true, tags: "ghcr.io/anuar4241/revorus-backend:${{ github.sha }}\nghcr.io/anuar4241/revorus-backend:main" }
+      - uses: docker/build-push-action@v6
+        with: { context: backend, target: migration, push: true, tags: "ghcr.io/anuar4241/revorus-backend-migrate:${{ github.sha }}\nghcr.io/anuar4241/revorus-backend-migrate:main" }
+      - uses: docker/build-push-action@v6
+        with: { context: frontend, push: true, tags: "ghcr.io/anuar4241/revorus-frontend:${{ github.sha }}\nghcr.io/anuar4241/revorus-frontend:main" }
